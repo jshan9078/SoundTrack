@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.endpoints import media, moods
+from app.api.endpoints import media, moods, questionnaire
 from app.core.config import settings
 from app.core.database import initialize_firebase
 
@@ -27,6 +27,7 @@ async def startup_event():
 # Include routers
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(moods.router, prefix="/api/moods", tags=["moods"])
+app.include_router(questionnaire.router, prefix="/api/questionnaire", tags=["questionnaire"])
 
 @app.get("/")
 async def root():
