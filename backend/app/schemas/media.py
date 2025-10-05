@@ -11,6 +11,10 @@ class MediaBase(BaseModel):
     elements: Optional[List[str]] = None
     tags: Optional[List[str]] = None
     mood: Optional[str] = None
+    song: Optional[str] = None
+    song_artist: Optional[str] = None
+    embed: Optional[str] = None
+    user_mood: Optional[str] = None
 
 class MediaCreate(MediaBase):
     pass
@@ -33,3 +37,13 @@ class MediaResponse(MediaBase):
 
     class Config:
         from_attributes = True
+
+class SongRecommendation(BaseModel):
+    name: str
+    artist: str
+
+class SongRecommendationResponse(BaseModel):
+    message: str
+    media_id: str
+    recommendation: SongRecommendation
+    context: dict

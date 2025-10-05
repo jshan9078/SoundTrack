@@ -38,7 +38,7 @@ class QuestionnaireModel:
 
     def get_all(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """Get all questionnaire documents with pagination"""
-        query = self.collection.order_by("created_at", direction="desc")
+        query = self.collection.order_by("created_at", direction="DESCENDING")
 
         if offset > 0:
             query = query.offset(offset)

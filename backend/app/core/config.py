@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import List
+import os
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "SoundTrack"
@@ -9,8 +10,12 @@ class Settings(BaseSettings):
     FIREBASE_CREDENTIALS_PATH: str = ""  # Path to service account JSON
     FIREBASE_PROJECT_ID: str = ""
 
-    # CORS
-    ALLOWED_HOSTS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # CORS - simple list that works with env vars
+    ALLOWED_HOSTS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    def get_allowed_hosts_list(self) -> List[str]:
+        """Parse ALLOWED_HOSTS into a list"""
+        return [host.strip() for host in self.ALLOWED_HOSTS.split(",")]
 
     # Storage (Firebase Storage)
     STORAGE_BUCKET: str = "soundtrack-media"

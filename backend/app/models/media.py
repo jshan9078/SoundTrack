@@ -27,6 +27,10 @@ class MediaModel:
             "mood": media_data.get("mood"),
             "processed_at": media_data.get("processed_at"),
             "error": media_data.get("error"),
+            "song": media_data.get("song"),
+            "song_artist": media_data.get("song_artist"),
+            "embed": media_data.get("embed"),
+            "user_mood": media_data.get("user_mood"),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -54,6 +58,23 @@ class MediaModel:
         if offset > 0:
             # For pagination, we'd need to implement cursor-based pagination
             # This is a simplified version
+            query = query.offset(offset)
+
+        docs = query.limit(limit).stream()
+
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            results.append(data)
+
+        return results
+
+    def get_all_ordered_by_created_at(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get all media documents ordered by created_at (oldest to newest)"""
+        query = self.collection.order_by("created_at", direction="ASCENDING")
+
+        if offset > 0:
             query = query.offset(offset)
 
         docs = query.limit(limit).stream()

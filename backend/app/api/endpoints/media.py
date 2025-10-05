@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 from app.models.media import MediaModel
-from app.schemas.media import MediaCreate, MediaUpdate, MediaResponse, MediaAnalyzeRequest
+from app.schemas.media import MediaCreate, MediaUpdate, MediaResponse, MediaAnalyzeRequest, SongRecommendationResponse
 from firebase_admin import storage
 from datetime import datetime, timezone
 import logging
@@ -34,6 +34,12 @@ def get_media(skip: int = 0, limit: int = 100, media_model: MediaModel = Depends
     media_items = media_model.get_all(limit=limit, offset=skip)
     return media_items
 
+@router.get("/ordered/created-at", response_model=List[MediaResponse])
+def get_media_ordered_by_created_at(skip: int = 0, limit: int = 100, media_model: MediaModel = Depends(get_media_model)):
+    """Get all media items ordered by created_at (oldest to newest)"""
+    media_items = media_model.get_all_ordered_by_created_at(limit=limit, offset=skip)
+    return media_items
+
 @router.get("/{media_id}", response_model=MediaResponse)
 def get_media_item(media_id: str, media_model: MediaModel = Depends(get_media_model)):
     """Get a specific media item by ID"""
@@ -46,6 +52,20 @@ def get_media_item(media_id: str, media_model: MediaModel = Depends(get_media_mo
 def create_media(media: MediaCreate, media_model: MediaModel = Depends(get_media_model)):
     """Create a new media item"""
     media_data = media.model_dump()
+
+    # Fetch latest mood from database if not provided
+    if "user_mood" not in media_data or not media_data.get("user_mood"):
+        mood_collection = media_model.db.collection("mood")
+        mood_docs = mood_collection.order_by("created_at", direction="DESCENDING").limit(1).stream()
+
+        mood_list = list(mood_docs)
+        if mood_list:
+            media_data["user_mood"] = mood_list[0].to_dict().get("mood", "")
+            logger.info(f"✅ Fetched latest user mood for new media: {media_data['user_mood']}")
+        else:
+            media_data["user_mood"] = ""
+            logger.warning("⚠️ No mood found in database")
+
     doc_id = media_model.create(media_data)
 
     # Return the created media item
@@ -223,6 +243,20 @@ Respond in JSON format with this structure:
             # Get current timestamp for processing time
             processed_at = datetime.now(timezone.utc)
 
+            # Fetch latest mood from database
+            logger.info("😊 Fetching latest user mood from database...")
+            mood_collection = media_model.db.collection("mood")
+            mood_docs = mood_collection.order_by("created_at", direction="DESCENDING").limit(1).stream()
+
+            user_mood = ""
+            mood_list = list(mood_docs)
+            if mood_list:
+                user_mood = mood_list[0].to_dict().get("mood", "")
+                logger.info(f"✅ User Mood (from database): {user_mood}")
+            else:
+                logger.warning("⚠️ No mood found in database")
+                user_mood = ""
+
             # Now create Firestore entry with all data (analysis complete)
             logger.info("📊 Creating Firestore entry with analysis results...")
             media_data = {
@@ -232,6 +266,7 @@ Respond in JSON format with this structure:
                 "summary": analysis_result.get("summary"),
                 "elements": analysis_result.get("elements"),
                 "mood": analysis_result.get("mood"),
+                "user_mood": user_mood,
                 "processed_at": processed_at
             }
 
@@ -280,15 +315,18 @@ Respond in JSON format with this structure:
         logger.error(f"❌ Error downloading/processing image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to analyze image: {str(e)}")
 
-@router.post("/recommend-song")
+@router.post("/recommend-song", response_model=SongRecommendationResponse)
 async def recommend_song(media_id: str, media_model: MediaModel = Depends(get_media_model)):
     """
-    Recommend a song based on media analysis.
+    Recommend a song based on media analysis and user questionnaire.
     Called by Cloud Function when a new media entry is created in Firestore.
 
     Args:
         media_id: The ID of the media document in Firestore
     """
+    from app.models.questionnaire import QuestionnaireModel
+    from app.utils.spotify import search_track
+
     logger.info("=" * 80)
     logger.info("🎵 RECOMMEND-SONG ENDPOINT CALLED")
     logger.info(f"📋 Media ID: {media_id}")
@@ -301,27 +339,127 @@ async def recommend_song(media_id: str, media_model: MediaModel = Depends(get_me
         logger.error(f"❌ Media item not found: {media_id}")
         raise HTTPException(status_code=404, detail="Media item not found")
 
-    # Extract analysis data
-    mood = media_item.get("mood")
-    summary = media_item.get("summary")
-    elements = media_item.get("elements", [])
+    # Extract image analysis data
+    image_mood = media_item.get("mood")
+    image_summary = media_item.get("summary")
+    image_elements = media_item.get("elements", [])
 
-    logger.info(f"😊 Mood: {mood}")
-    logger.info(f"📝 Summary: {summary}")
-    logger.info(f"🏷️  Elements: {elements}")
+    logger.info(f"🖼️  Image Mood: {image_mood}")
+    logger.info(f"📝 Image Summary: {image_summary}")
+    logger.info(f"🏷️  Image Elements: {image_elements}")
 
-    # TODO: Add song recommendation logic here
-    # For now, just return the data we received
-    logger.info("🎵 TODO: Song recommendation logic will be added here")
-    logger.info("=" * 80)
+    # Fetch latest questionnaire
+    questionnaire_model = QuestionnaireModel()
+    questionnaires = questionnaire_model.get_all(limit=1)
 
-    return {
-        "message": "Media data received successfully",
-        "media_id": media_id,
-        "data": {
-            "mood": mood,
-            "summary": summary,
-            "elements": elements
-        },
-        "note": "TODO: Add song recommendation logic"
-    }
+    questionnaire_data = None
+    if questionnaires:
+        questionnaire_data = questionnaires[0].get("qa_pairs", [])
+        logger.info(f"📋 Found questionnaire with {len(questionnaire_data)} QA pairs")
+    else:
+        logger.warning("⚠️  No questionnaire found")
+
+    # Fetch latest mood from database
+    mood_collection = media_model.db.collection("mood")
+    mood_docs = mood_collection.order_by("created_at", direction="DESCENDING").limit(1).stream()
+
+    user_mood = ""
+    mood_list = list(mood_docs)
+    if mood_list:
+        user_mood = mood_list[0].to_dict().get("mood", "")
+        logger.info(f"😔 User Mood (from database): {user_mood}")
+    else:
+        logger.warning("⚠️ No mood found in database")
+        user_mood = ""
+
+    # Call Gemini to recommend a song
+    try:
+        if not GENAI_AVAILABLE:
+            raise Exception("google-generativeai package not installed")
+
+        logger.info("🤖 Calling Gemini for song recommendation...")
+
+        model = genai.GenerativeModel('gemini-flash-latest')
+
+        # Build the prompt with all context
+        questionnaire_str = ""
+        if questionnaire_data:
+            questionnaire_str = "\n".join([f"Q: {qa['question']}\nA: {qa['answer']}" for qa in questionnaire_data])
+
+        prompt = f"""You are a music recommendation expert. Based on the following information, recommend ONE song that would be perfect for this moment.
+
+USER PREFERENCES (from questionnaire):
+{questionnaire_str if questionnaire_str else "No questionnaire data available"}
+
+USER'S CURRENT MOOD: {user_mood}
+
+IMAGE CONTEXT:
+- Image Mood: {image_mood}
+- Image Summary: {image_summary}
+- Elements in Image: {', '.join(image_elements) if image_elements else 'None'}
+
+Based on all this context, recommend a single song available on Spotify that would resonate with the user right now. The name of the song must be the same name that is available on Spotify.
+
+Respond in JSON format with this exact structure:
+{{
+    "name": "Song Title",
+    "artist": "Artist Name"
+}}"""
+
+        response = model.generate_content(prompt)
+
+        # Parse JSON response
+        response_text = response.text.strip()
+        if response_text.startswith('```json'):
+            response_text = response_text.split('```json')[1].split('```')[0].strip()
+        elif response_text.startswith('```'):
+            response_text = response_text.split('```')[1].split('```')[0].strip()
+
+        song_recommendation = json.loads(response_text)
+
+        logger.info(f"✅ Song Recommendation: {song_recommendation.get('name')} by {song_recommendation.get('artist')}")
+
+        # Search for the song on Spotify
+        logger.info("🎧 Searching Spotify for the recommended song...")
+        spotify_data = search_track(
+            song_name=song_recommendation.get("name"),
+            artist_name=song_recommendation.get("artist")
+        )
+
+        # Update media object with song data and user mood
+        if spotify_data:
+            logger.info(f"💾 Updating media object with Spotify data...")
+            update_data = {
+                "song": spotify_data.get("song"),
+                "song_artist": spotify_data.get("song_artist"),
+                "embed": spotify_data.get("embed"),
+                "user_mood": user_mood
+            }
+            media_model.update(media_id, update_data)
+            logger.info(f"✅ Media object updated with song: {spotify_data.get('song')}")
+        else:
+            logger.warning(f"⚠️ No Spotify data found for query: '{song_recommendation.get('name')}' by '{song_recommendation.get('artist')}', media object not updated")
+
+        logger.info("=" * 80)
+
+        return {
+            "message": "Song recommended successfully",
+            "media_id": media_id,
+            "recommendation": {
+                "name": song_recommendation.get("name"),
+                "artist": song_recommendation.get("artist")
+            },
+            "context": {
+                "user_mood": user_mood,
+                "image_mood": image_mood,
+                "image_summary": image_summary,
+                "image_elements": image_elements,
+                "questionnaire_available": bool(questionnaire_data)
+            },
+            "spotify": spotify_data if spotify_data else None
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Song recommendation failed: {str(e)}")
+        logger.info("=" * 80)
+        raise HTTPException(status_code=500, detail=f"Failed to recommend song: {str(e)}")
